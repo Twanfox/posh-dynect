@@ -6,7 +6,7 @@ $RestEndpointURI = 'https://api.dynect.net/REST'
 $DynECTPersist = $False
 $DynECTCustomerName = [string]::Empty
 $DynECTUserName = [string]::Empty
-$DynECTPassword = [SecureString]::new()
+$DynECTPassword = $null
 
 ## Configurable Options
 $DynECTSessionCheckInterval = 60
@@ -26,6 +26,8 @@ $DynECTMinuteLimitStart = (Get-Date)
  Kittyfox.DynECT.ZoneChangeInfo
  Kittyfox.DynECT.ZonePublishInfo
 
+ Kittyfox.DynECT.NodeInfo
+
  Kittyfox.DynECT.ARecordInfo
 
 #>
@@ -43,7 +45,15 @@ Function FunctionName {
     Param(
     )
 
-    throw [System.NotImplementedException]::new("This commandlet is not yet implemented.")
+    Begin {
+        throw [System.NotImplementedException]::New('This commandlet is not yet implemented.')
+    }
+
+    Process {
+    }
+
+    End {
+    }
 }
 
 #>
@@ -72,6 +82,7 @@ Function Connect-DynECTSession {
         [string]
         $UserName,
 
+        [ValidateNotNull()]
         [SecureString]
         $Password,
 
@@ -116,7 +127,7 @@ Function Connect-DynECTSession {
             $Script:DynECTPersist = $False
             $Script:DynECTCustomerName = [string]::Empty
             $Script:DynECTUserName = [string]::Empty
-            $Script:DynECTPassword = [SecureString]::new()
+            $Script:DynECTPassword = $null
         }
     }
 }
@@ -207,7 +218,7 @@ Function Disconnect-DynECTSession {
         $Script:DynECTPersist = $False
         $Script:DynECTCustomerName = [string]::Empty
         $Script:DynECTUserName = [string]::Empty
-        $Script:DynECTPassword = [SecureString]::new()
+        $Script:DynECTPassword = $null
     }
 }
 #endregion DynECT Session Commandlets
@@ -241,11 +252,12 @@ Function Get-DynECTZone {
     [CmdletBinding()]
     Param(
         [Parameter(Mandatory=$False, ValueFromPipeline=$True)]
-        [string]
+        [string[]]
         $Zone
     )
 
     Begin {
+        $UriBase = '/Zone'
         $IsConnected = Test-DynECTSession -Reconnect
         $IsZoneSpecified = $PSBoundParameters.ContainsKey('Zone')
 
@@ -256,9 +268,8 @@ Function Get-DynECTZone {
     }
 
     Process {
-            $Uri = '/Zone'
             if ($PSBoundParameters.ContainsKey('Zone')) {
-                $Uri += ('/' + $Zone)
+                $Uri = "$UriBase/$Zone"
             }
 
             $Response = Helper-InvokeRestMethod -Method GET -Uri $Uri
@@ -273,6 +284,7 @@ Function Get-DynECTZone {
                     }
                     $ZoneData = New-Object -Type PSObject -Property $ZoneInfo
                     $ZoneData.PSObject.TypeNames.Insert(0,'Kittyfox.DynECT.ZoneInfo')
+
                     Write-Output $ZoneData
                 } else {
                     foreach ($Entry in $Response.data) {
@@ -294,31 +306,49 @@ Function Get-DynECTZone {
 Function Lock-DynECTZone {
     [CmdletBinding()]
     Param(
-        [Parameter(Mandatory=$True, Position=1)]
+        [Parameter(Mandatory=$True, Position=1, 
+                   ValueFromPipeline=$True, ValueFromPipelineByPropertyName=$True)]
         [ValidateNotNullOrEmpty()]
-        [string]
+        [string[]]
         $Zone
     )
 
-    # https://help.dyn.com/update-zone-api/
-    # - Freeze option
+    Begin {
+        # https://help.dyn.com/update-zone-api/
+        # - Freeze option
 
-    Helper-UpdateDynECTZone -Zone $Zone -Freeze
+        Helper-UpdateDynECTZone -Zone $Zone -Freeze
+    }
+
+    Process {
+    }
+
+    End {
+    }
 }
 
 Function Unlock-DynECTZone {
     [CmdletBinding()]
     Param(
-        [Parameter(Mandatory=$True, Position=1)]
+        [Parameter(Mandatory=$True, Position=1, 
+                   ValueFromPipeline=$True, ValueFromPipelineByPropertyName=$True)]
         [ValidateNotNullOrEmpty()]
-        [string]
+        [string[]]
         $Zone
     )
 
-    # https://help.dyn.com/update-zone-api/
-    # - Thaw option
+    Begin {
+        # https://help.dyn.com/update-zone-api/
+        # - Freeze option
 
-    Helper-UpdateDynECTZone -Zone $Zone -Thaw
+        Helper-UpdateDynECTZone -Zone $Zone -Thaw
+    }
+
+    Process {
+    }
+
+    End {
+    }
 }
 
 Function Publish-DynECTZone {
@@ -382,8 +412,8 @@ Function Get-DynECTZoneChanges {
                         User = $Change.user_id
                         Zone = $Change.zone
                         FQDN = $Change.fqdn
-                        SourceSerial = $Change.serial
-                        TimeToLive = $Change.ttl
+                        SerialNumber = $Change.serial
+                        TTL = $Change.ttl
                         RecordType = $Change.rdata_type
                     }
 
@@ -461,6 +491,107 @@ Function Clear-DynECTZoneChanges {
 #endregion DynECT Session Commandlets
 
 #region DynECT Record Commandlets
+Function Get-DynECTNode {
+    [CmdletBinding()]
+    Param(
+        [Parameter(Mandatory=$True, Position=0)]
+        [ValidateNotNull()]
+        [string]
+        $Zone,
+
+        [Parameter(Mandatory=$False, Position=1, ValueFromPipeline=$True)]
+        [ValidateNotNull()]
+        [string[]]
+        $FQDN
+    )
+
+    Begin {
+        $UriBase = "/NodeList/$Zone"
+        $IsConnected = Test-DynECTSession -Reconnect
+
+        if (-not $IsConnected) {
+            Write-Error "Not connected to DynECT Managed DNS Service."
+            return
+        }
+
+        $Queue = New-Object -Type System.Collections.Queue
+    }
+
+    Process {
+        if ($PSBoundParameters.ContainsKey('FQDN')) {
+            foreach ($Name in $FQDN) {
+                $Queue.Enqueue("$UriBase/$Name")
+            }
+        } else {
+            $Queue.Enqueue($UriBase)
+        }
+
+        while ($Queue.Count -gt 0) {
+            $Uri = $Queue.Dequeue()
+
+            $Response = Helper-InvokeRestMethod -Method GET -Uri $Uri
+
+            if ($Response.status -eq 'success') {
+                # Output the message from the remote side, verbose form.
+                $Response.msgs | foreach { Write-Verbose $_.INFO }
+
+                foreach ($Node in $Response.data) {
+                    $NodeInfo = [ordered] @{
+                        Zone = $Zone
+                        FQDN = $Node
+                    }
+                    $NodeData = New-Object -Type PSObject -Property $NodeInfo
+                    $NodeData.PSObject.TypeNames.Insert(0,'Kittyfox.DynECT.NodeInfo')
+                    Write-Output $NodeData
+                }
+            } else {
+                $Message = ($Response.msgs | where { $_.LVL -eq 'ERROR' }).INFO
+
+                Write-Error $Message
+            }
+        }
+    }
+
+    End {
+    }
+}
+
+Function Remove-DynECTNode {
+    [CmdletBinding()]
+    Param(
+        [Parameter(Mandatory=$True, Position=0)]
+        [ValidateNotNull()]
+        [string]
+        $Zone,
+
+        [Parameter(Mandatory=$False, Position=1, ValueFromPipeline=$True)]
+        [ValidateNotNull()]
+        [string[]]
+        $FQDN,
+
+        [Parameter(Mandatory=$False)]
+        [switch]
+        $Recurse
+    )
+
+    Begin {
+        throw [System.NotImplementedException]::New('This commandlet is not yet implemented.')
+
+        $IsConnected = Test-DynECTSession -Reconnect
+
+        if (-not $IsConnected) {
+            Write-Error "Not connected to DynECT Managed DNS Service."
+            return
+        }
+    }
+
+    Process {
+    }
+
+    End {
+    }
+}
+
 Function New-DynECTARecord {
     [CmdletBinding()]
     Param(
@@ -586,6 +717,7 @@ Function Get-DynECTARecord {
                         Zone = $Response.data.zone
                         FQDN = $Response.data.fqdn
                         RecordType = $Response.data.record_type
+                        RecordId = $Id
                         Address = $Response.data.rdata.address
                         TTL = $Response.data.ttl
                     }
@@ -618,6 +750,17 @@ Function Get-DynECTARecord {
 Function Update-DynECTARecord {
     [CmdletBinding()]
     Param(
+        [Parameter(Mandatory=$True, Position=0)]
+        [string]
+        $Zone,
+
+        [Parameter(Mandatory=$true, Position=1, ValueFromPipelineByPropertyName=$True)]
+        [string[]]
+        $FQDN,
+
+        [Parameter(Mandatory=$False, Position=2, ValueFromPipelineByPropertyName=$True)]
+        [string[]]
+        $RecordId
     )
 
     throw [System.NotImplementedException]::new("This commandlet is not yet implemented.")
@@ -626,6 +769,17 @@ Function Update-DynECTARecord {
 Function Remove-DynECTARecord {
     [CmdletBinding()]
     Param(
+        [Parameter(Mandatory=$True, Position=0)]
+        [string]
+        $Zone,
+
+        [Parameter(Mandatory=$true, Position=1, ValueFromPipelineByPropertyName=$True)]
+        [string[]]
+        $FQDN,
+
+        [Parameter(Mandatory=$False, Position=2, ValueFromPipelineByPropertyName=$True)]
+        [string[]]
+        $RecordId
     )
 
     throw [System.NotImplementedException]::new("This commandlet is not yet implemented.")
@@ -637,9 +791,9 @@ Function Remove-DynECTARecord {
 Function Helper-UpdateDynECTZone {
     [CmdletBinding()]
     Param(
-        [Parameter(ParameterSetName='Freeze', Mandatory=$True, Position=1, ValueFromPipeline=$True)]
-        [Parameter(ParameterSetName='Thaw', Mandatory=$True, Position=1, ValueFromPipeline=$True)]
-        [Parameter(ParameterSetName='Publish', Mandatory=$True, Position=1, ValueFromPipeline=$True)]
+        [Parameter(ParameterSetName='Freeze', Mandatory=$True, Position=0, ValueFromPipeline=$True)]
+        [Parameter(ParameterSetName='Thaw', Mandatory=$True, Position=0, ValueFromPipeline=$True)]
+        [Parameter(ParameterSetName='Publish', Mandatory=$True, Position=0, ValueFromPipeline=$True)]
         [ValidateNotNullOrEmpty()]
         [string[]]
         $Zone,
@@ -661,48 +815,67 @@ Function Helper-UpdateDynECTZone {
         $Notes
     )
 
-    $Uri = "/Zone/$Zone"
-    $ZoneOptions = @{}
+    Begin {
+        $UriBase = "/Zone"
 
-    switch ($PSCmdlet.ParameterSetName) {
-        'Freeze' {
-            $ZoneOptions.Add('freeze', $True)
-        }
-        'Thaw' {
-            $ZoneOptions.Add('thaw', $True)
-        }
-        'Publish' {
-            $ZoneOptions.Add('publish', $True)
+        $IsConnected = Test-DynECTSession -Reconnect
 
-            if (-not [string]::IsNullOrEmpty($Notes)) {
-                $ZoneOptions.Add('notes', $Notes)
+        if (-not $IsConnected) {
+            Write-Error "Not connected to DynECT Managed DNS Service."
+            return
+        }
+    }
+
+    Process {
+        foreach ($Item in $Zone) {
+            $Uri = "$UriBase/$Item"
+            $ZoneOptions = @{}
+
+            switch ($PSCmdlet.ParameterSetName) {
+                'Freeze' {
+                    $ZoneOptions.Add('freeze', $True)
+                }
+                'Thaw' {
+                    $ZoneOptions.Add('thaw', $True)
+                }
+                'Publish' {
+                    $ZoneOptions.Add('publish', $True)
+
+                    if (-not [string]::IsNullOrEmpty($Notes)) {
+                        $ZoneOptions.Add('notes', $Notes)
+                    }
+                }
+            }
+            $ZoneData = New-Object -TypeName PSObject -Property $ZoneOptions
+
+            $Response = Helper-InvokeRestMethod -Method PUT -Uri $Uri -Body $ZoneData
+
+            if ($Response.status -eq 'success') {
+                if ($PSCmdlet.ParameterSetName -eq 'Publish') {
+                    # Output the message from the remote side, verbose form.
+                    $Response.msgs | foreach { Write-Verbose $_.INFO }
+
+                    $ZoneInfo = [ordered] @{
+                        Name = $Response.data.zone
+                        Type = $Response.data.zone_type
+                        PublishTask = $Response.data.task_id
+                        SerialStyle = $Response.data.serial_style
+                        SerialNumber = $Response.data.serial
+                    }
+                    $ZoneData = New-Object -Type PSObject -Property $ZoneInfo
+                    $ZoneData.PSObject.TypeNames.Insert(0,'Kittyfox.DynECT.ZonePublishInfo')
+
+                    Write-Output $ZoneData
+                }
+            } else {
+                $Message = ($Response.msgs | where { $_.LVL -eq 'ERROR' }).INFO
+
+                Write-Error $Message
             }
         }
     }
-    $ZoneData = New-Object -TypeName PSObject -Property $ZoneOptions
 
-    $Response = Helper-InvokeRestMethod -Method PUT -Uri $Uri -Body $ZoneData
-
-    if ($Response.status -eq 'success') {
-        if ($PSCmdlet.ParameterSetName -eq 'Publish') {
-            # Output the message from the remote side, verbose form.
-            $Response.msgs | foreach { Write-Verbose $_.INFO }
-
-            $ZoneInfo = [ordered] @{
-                Name = $Response.data.zone
-                Type = $Response.data.zone_type
-                PublishTask = $Response.data.task_id
-                SerialStyle = $Response.data.serial_style
-                SerialNumber = $Response.data.serial
-            }
-            $ZoneData = New-Object -Type PSObject -Property $ZoneInfo
-            $ZoneData.PSObject.TypeNames.Insert(0,'Kittyfox.DynECT.ZonePublishInfo')
-            Write-Output $ZoneData
-        }
-    } else {
-        $Message = ($Response.msgs | where { $_.LVL -eq 'ERROR' }).INFO
-
-        Write-Error $Message
+    End {
     }
 }
 
@@ -786,7 +959,7 @@ Function Helper-DynECTRateLock {
     Param(
     )
 
-    
+    throw [System.NotImplementedException]::New("This commandlet is not yet implemented")
 }
 #endregion DynECT Helper Commandlets
 
