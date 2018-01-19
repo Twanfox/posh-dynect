@@ -20,6 +20,54 @@ $DynECTRatePerMinute = 0
 $DynECTSecondLimitStart = (Get-Date)
 $DynECTMinuteLimitStart = (Get-Date)
 
+$DynECTResourceRecordMap = New-Object System.Collections.Hashtable
+$DynECTResourceRecordMap.Add('A', (New-Object PSObject -Property @{
+    ResourceUri = 'ARecord'
+    TypeName = 'ARecordInfo'
+    RDataProps = @('Address')
+}))
+$DynECTResourceRecordMap.Add('AAAA', (New-Object PSObject -Property @{
+    ResourceUri = 'AAAARecord'
+    TypeName = 'AAAARecordInfo'
+    RDataProps = @('Address')
+}))
+$DynECTResourceRecordMap.Add('ALIAS', (New-Object PSObject -Property @{
+    ResourceUri = 'ALIASRecord'
+    TypeName = 'ALIASRecordInfo'
+    RDataProps = @('ALIAS')
+}))
+$DynECTResourceRecordMap.Add('CNAME', (New-Object PSObject -Property @{
+    ResourceUri = 'CNAMERecord'
+    TypeName = 'CNAMERecordInfo'
+    RDataProps = @('CNAME')
+}))
+$DynECTResourceRecordMap.Add('NS', (New-Object PSObject -Property @{
+    ResourceUri = 'NSRecord'
+    TypeName = 'NSRecordInfo'
+    RDataProps = @('NsDName')
+}))
+$DynECTResourceRecordMap.Add('MX', (New-Object PSObject -Property @{
+    ResourceUri = 'MXRecord'
+    TypeName = 'MXRecordInfo'
+    RDataProps = @('Exchange', 'Preference')
+}))
+$DynECTResourceRecordMap.Add('PTR', (New-Object PSObject -Property @{
+    ResourceUri = 'PTRRecord'
+    TypeName = 'PTRRecordInfo'
+    RDataProps = @('PtrDName')
+}))
+$DynECTResourceRecordMap.Add('TXT', (New-Object PSObject -Property @{
+    ResourceUri = 'TXTRecord'
+    TypeName = 'TXTRecordInfo'
+    RDataProps = @('TXTData')
+}))
+$DynECTResourceRecordMap.Add('SRV', (New-Object PSObject -Property @{
+    ResourceUri = 'SRVRecord'
+    TypeName = 'SRVRecordInfo'
+    RDataProps = @('Port', 'Priority', 'Target', 'Weight')
+}))
+
+
 <# Known Types of the Module
 
  Kittyfox.DynECT.ZoneInfo
@@ -29,7 +77,7 @@ $DynECTMinuteLimitStart = (Get-Date)
  Kittyfox.DynECT.NodeInfo
 
  Kittyfox.DynECT.ARecordInfo
-
+ Kittyfox.DynECT.CNAMERecordInfo
 #>
 
 <# Type-Setting Snippet
@@ -592,33 +640,58 @@ Function Remove-DynECTNode {
     }
 }
 
-Function New-DynECTARecord {
+Function Add-DynECTResourceRecord {
     [CmdletBinding()]
     Param(
-        [Parameter(Mandatory=$True, Position=0)]
+        [Parameter(Mandatory=$true, Position=0)]
         [string]
         $Zone,
 
-        [Parameter(Mandatory=$true, Position=1, ValueFromPipelineByPropertyName=$True)]
-        [string[]]
+        [Parameter(Mandatory=$true, Position=1, ParameterSetName='A')]
+        [Parameter(Mandatory=$true, Position=1, ParameterSetName='AAAA')]
+        [Parameter(Mandatory=$true, Position=1, ParameterSetName='CNAME')]
+        [Parameter(Mandatory=$true, Position=1, ParameterSetName='TXT')]
+        [string]
         $FQDN,
 
-        [Parameter(Mandatory=$true, Position=2, ValueFromPipelineByPropertyName=$True)]
-        [ValidateScript({[ipaddress]::TryParse($_, [ref] $null)})]
-        [string[]]
-        $Address,
-        
-        [Parameter(Mandatory=$true, Position=3, ValueFromPipelineByPropertyName=$True)]
+        [Parameter(Mandatory=$false)]
         [ValidateScript({[int]::TryParse($_, [ref] $null)})]
-        [string[]]
-        $TTL
+        [string]
+        $TTL = 0,
+
+        [Parameter(ParameterSetName='A', Position=2, Mandatory=$true)]
+        [switch]
+        $A,
+
+        [Parameter(ParameterSetName='AAAA', Position=2, Mandatory=$true)]
+        [switch]
+        $AAAA,
+
+        [Parameter(ParameterSetName='A', Mandatory=$true)]
+        [Parameter(ParameterSetName='AAAA', Mandatory=$true)]
+        [ValidateScript({[ipaddress]::TryParse($_, [ref] $null)})]
+        [string]
+        $Address,
+
+        [Parameter(ParameterSetName='CNAME', Position=2, Mandatory=$true)]
+        [switch]
+        $CNAME,
+
+        [Parameter(ParameterSetName='CNAME', Mandatory=$true)]
+        [string]
+        $HostNameAlias,
+
+        [Parameter(ParameterSetName='TXT', Position=2, Mandatory=$true)]
+        [switch]
+        $TXT,
+
+        [Parameter(ParameterSetName='TXT', Mandatory=$true)]
+        [string]
+        $TXTData
+
     )
 
     Begin {
-        if ($FQDN.Count -ne $Address.Count -or $FQDN.Count -ne $TTL.Count) {
-            throw [System.ArgumentException]::New('FQDN, Address, and TTL must contain the same number of elements.')
-        }
-
         $IsConnected = Test-DynECTSession -Reconnect
 
         if (-not $IsConnected) {
@@ -628,59 +701,46 @@ Function New-DynECTARecord {
     }
 
     Process {
-        foreach ($Index in 0..($FQDN.Count-1)) {
-            $Name = $FQDN[$Index]
-            $Addr = $Address[$Index]
-            $Time = $TTL[$Index]
+        $RecordData = New-Object System.Collections.Hashtable
+        $RecordType = $PSCmdlet.ParameterSetName
 
-            $Uri = "/ARecord/$Zone/$Name"
-            $RecordInfo = @{
-                rdata = @{address = $Addr}
-                ttl = $Time
+        switch ($PSCmdlet.ParameterSetName) {
+            {$_ -in 'A', 'AAAA'} {
+                $RecordData.Add('address', $Address)
             }
-
-            $Response = Helper-InvokeRestMethod -Method POST -Uri $Uri -Body $RecordInfo
-
-            if ($Response.status -eq 'success') {
-                # Output the message from the remote side, verbose form.
-                $Response.msgs | foreach { Write-Verbose $_.INFO }
-
-                $RecordInfo = [ordered] @{
-                    Zone = $Response.data.zone
-                    FQDN = $Response.data.fqdn
-                    RecordType = $Response.data.record_type
-                    Address = $Response.data.rdata.address
-                    TTL = $Response.data.ttl
-                }
-                $RecordData = New-Object -Type PSObject -Property $RecordInfo
-                $RecordData.PSObject.TypeNames.Insert(0,'Kittyfox.DynECT.ARecordInfo')
-                Write-Output $RecordData
-            } else {
-                $Message = ($Response.msgs | where { $_.LVL -eq 'ERROR' }).INFO
-
-                Write-Error $Message
+            'CNAME' {
+                $RecordData.Add('cname', $HostNameAlias)
+            }
+            'TXT' {
+                $RecordData.Add('txtdata', $TXTData)
+            }
+            default {
+                throw [System.NotImplementedException]::New('This Resource Record Type is not yet implemented.')
             }
         }
+
+        Helper-AddDynECTResourceRecord -Zone $Zone -FQDN $FQDN -TTL $TTL -RecordType $RecordType -AddRecordData $RecordData
     }
 
     End {
     }
 }
 
-Function Get-DynECTARecord {
+Function Get-DynECTResourceRecord {
     [CmdletBinding()]
     Param(
-        [Parameter(Mandatory=$True, Position=0)]
+        [Parameter(Mandatory=$true, Position=0)]
         [string]
         $Zone,
 
-        [Parameter(Mandatory=$true, Position=1, ValueFromPipelineByPropertyName=$True)]
-        [string[]]
+        [Parameter(Mandatory=$true, Position=1)]
+        [string]
         $FQDN,
 
-        [Parameter(Mandatory=$False, Position=2, ValueFromPipelineByPropertyName=$True)]
-        [string[]]
-        $RecordId
+        [Parameter(Mandatory=$false)]
+        [ValidateSet('A', 'AAAA', 'ALIAS', 'CNAME', 'NS', 'MX', 'PTR', 'SRV', 'TXT')]
+        [string]
+        $RRType
     )
 
     Begin {
@@ -693,53 +753,14 @@ Function Get-DynECTARecord {
     }
 
     Process {
-        foreach ($Index in 0..($FQDN.Count-1)) {
-            $Name = $FQDN[$Index]
-            
-            if ($PSBoundParameters.ContainsKey('RecordId')) {
-                $Id = $RecordId[$Index]
-            }
+        if ($PSBoundParameters.ContainsKey('RRType')) {
+            $RequestedType = $RRType
+        } else {
+            $RequestedType = $Script:DynECTResourceRecordMap.Keys
+        }
 
-            $Uri = "/ARecord/$Zone/$Name"
-            if (-not [string]::IsNullOrEmpty($Id)) {
-                $ByRecordId = $True
-                $Uri = "$Uri/$Id"
-            }
-
-            $Response = Helper-InvokeRestMethod -Method GET -Uri $Uri
-
-            if ($Response.status -eq 'success') {
-                # Output the message from the remote side, verbose form.
-                $Response.msgs | foreach { Write-Verbose $_.INFO }
-
-                if ($ByRecordId) {
-                    $RecordInfo = [ordered] @{
-                        Zone = $Response.data.zone
-                        FQDN = $Response.data.fqdn
-                        RecordType = $Response.data.record_type
-                        RecordId = $Id
-                        Address = $Response.data.rdata.address
-                        TTL = $Response.data.ttl
-                    }
-                    $RecordData = New-Object -Type PSObject -Property $RecordInfo
-                    $RecordData.PSObject.TypeNames.Insert(0,'Kittyfox.DynECT.ARecordInfo')
-                    Write-Output $RecordData
-                } else {
-                    $NodeList = @()
-
-                    foreach ($Entry in $Response.data) {
-                        $FoundId = ($Entry.Split('/') | where { -not [string]::IsNullOrEmpty($_) })[-1]
-                        $NodeList += New-Object -Type PSObject -Property @{FQDN = $Name; RecordId = $FoundId}
-                    }
-
-                    $NodeList | Get-DynECTARecord -Zone $Zone
-                }
-            } else {
-                $Message = ($Response.msgs | where { $_.LVL -eq 'ERROR' }).INFO
-
-                Write-Error $Message
-            }
-
+        foreach ($Type in $RequestedType) {
+            Helper-GetDynECTResourceRecord -Zone $Zone -FQDN $FQDN -RecordType $Type
         }
     }
 
@@ -758,6 +779,54 @@ Function Update-DynECTARecord {
         [string[]]
         $FQDN,
 
+        [Parameter(Mandatory=$true, Position=2, ValueFromPipelineByPropertyName=$True)]
+        [string[]]
+        $RecordId,
+
+        [Parameter(Mandatory=$true, Position=3, ValueFromPipelineByPropertyName=$True)]
+        [ValidateScript({[ipaddress]::TryParse($_, [ref] $null)})]
+        [string[]]
+        $Address,
+        
+        [Parameter(Mandatory=$true, Position=4, ValueFromPipelineByPropertyName=$True)]
+        [ValidateScript({[int]::TryParse($_, [ref] $null)})]
+        [string[]]
+        $TTL
+    )
+
+    Begin {
+        throw [System.NotImplementedException]::new("This commandlet is not yet implemented.")
+
+        if ($FQDN.Count -ne $Address.Count -or $FQDN.Count -ne $TTL.Count -or $FQDN.Count -ne $RecordId.Count) {
+            throw [System.ArgumentException]::New('FQDN, Address, and TTL must contain the same number of elements.')
+        }
+
+        $IsConnected = Test-DynECTSession -Reconnect
+
+        if (-not $IsConnected) {
+            Write-Error "Not connected to DynECT Managed DNS Service."
+            return
+        }
+    }
+    
+    Process {
+    }
+    
+    End {
+    }
+}
+
+Function Remove-DynECTARecord {
+    [CmdletBinding()]
+    Param(
+        [Parameter(Mandatory=$True, Position=0)]
+        [string]
+        $Zone,
+
+        [Parameter(Mandatory=$true, Position=1, ValueFromPipelineByPropertyName=$True)]
+        [string[]]
+        $FQDN,
+
         [Parameter(Mandatory=$False, Position=2, ValueFromPipelineByPropertyName=$True)]
         [string[]]
         $RecordId
@@ -766,7 +835,54 @@ Function Update-DynECTARecord {
     throw [System.NotImplementedException]::new("This commandlet is not yet implemented.")
 }
 
-Function Remove-DynECTARecord {
+Function Update-DynECTCNAMERecord {
+    [CmdletBinding()]
+    Param(
+        [Parameter(Mandatory=$True, Position=0)]
+        [string]
+        $Zone,
+
+        [Parameter(Mandatory=$true, Position=1, ValueFromPipelineByPropertyName=$True)]
+        [string[]]
+        $FQDN,
+
+        [Parameter(Mandatory=$true, Position=2, ValueFromPipelineByPropertyName=$True)]
+        [string[]]
+        $RecordId,
+
+        [Parameter(Mandatory=$true, Position=3, ValueFromPipelineByPropertyName=$True)]
+        [string[]]
+        $CNAME,
+        
+        [Parameter(Mandatory=$true, Position=4, ValueFromPipelineByPropertyName=$True)]
+        [ValidateScript({[int]::TryParse($_, [ref] $null)})]
+        [string[]]
+        $TTL
+    )
+
+    Begin {
+        throw [System.NotImplementedException]::new("This commandlet is not yet implemented.")
+
+        if ($FQDN.Count -ne $CNAME.Count -or $FQDN.Count -ne $TTL.Count -or $FQDN.Count -ne $RecordId.Count) {
+            throw [System.ArgumentException]::New('FQDN, CNAME, and TTL must contain the same number of elements.')
+        }
+
+        $IsConnected = Test-DynECTSession -Reconnect
+
+        if (-not $IsConnected) {
+            Write-Error "Not connected to DynECT Managed DNS Service."
+            return
+        }
+    }
+    
+    Process {
+    }
+    
+    End {
+    }
+}
+
+Function Remove-DynECTCNAMERecord {
     [CmdletBinding()]
     Param(
         [Parameter(Mandatory=$True, Position=0)]
@@ -961,6 +1077,169 @@ Function Helper-DynECTRateLock {
 
     throw [System.NotImplementedException]::New("This commandlet is not yet implemented")
 }
+
+Function Helper-AddDynECTResourceRecord {
+    [CmdletBinding()]
+    Param(
+        [Parameter(Mandatory=$True, Position=0)]
+        [string]
+        $Zone,
+
+        [Parameter(Mandatory=$true, Position=1, ValueFromPipelineByPropertyName=$True)]
+        [string]
+        $FQDN,
+
+        [Parameter(Mandatory=$false, Position=2, ValueFromPipelineByPropertyName=$True)]
+        [ValidateScript({[int]::TryParse($_, [ref] $null)})]
+        [string]
+        $TTL = 0,
+
+        [Parameter(Mandatory=$true, Position=3, ValueFromPipelineByPropertyName=$True)]
+        [ValidateSet('A', 'AAAA', 'CNAME', 'TXT')]
+        [string]
+        $RecordType,
+
+        [Parameter(Mandatory=$true, Position=4, ValueFromPipelineByPropertyName=$True)]
+        [hashtable]
+        $AddRecordData
+    )
+
+    $ResourceMap = $Script:DynECTResourceRecordMap
+
+    if ($ResourceMap.Keys -notcontains $RecordType) {
+        throw [System.ArgumentException]::New('Supplied RecordType is not correctly mapped within the module.')
+    }
+
+    $ResourceUri = $ResourceMap[$RecordType].ResourceUri
+    [array] $RDataProps = $ResourceMap[$RecordType].RDataProps
+
+    $Uri = "/$ResourceUri/$Zone/$FQDN"
+    $RecordInfo = @{
+        rdata = $AddRecordData
+        ttl = $TTL
+    }
+
+    $Response = Helper-InvokeRestMethod -Method POST -Uri $Uri -Body $RecordInfo
+
+    if ($Response.status -eq 'success') {
+        # Output the message from the remote side, verbose form.
+        $Response.msgs | foreach { Write-Verbose $_.INFO }
+
+        $RecordInfo = [ordered] @{
+            Zone = $Response.data.zone
+            FQDN = $Response.data.fqdn
+            RecordType = $Response.data.record_type
+            TTL = $Response.data.ttl
+        }
+        
+        Write-Verbose "Processing $($RDataProps.Count) Record data properties"
+        foreach ($Prop in $ResourceMap[$RecordType].RDataProps) {
+            Write-Debug "Processing RecordData property $Prop"
+            $RecordInfo.Add($Prop, $Response.data.rdata."$Prop")
+        }
+
+        $RecordData = New-Object -Type PSObject -Property $RecordInfo
+        $RecordData.PSObject.TypeNames.Insert(0,"Kittyfox.DynECT.$($ResourceMap[$RecordType].TypeName)")
+        Write-Output $RecordData
+    } else {
+        $Message = ($Response.msgs | where { $_.LVL -eq 'ERROR' }).INFO
+
+        Write-Error $Message
+    }
+}
+
+Function Helper-GetDynECTResourceRecord {
+    [CmdletBinding()]
+    Param(
+        [Parameter(Mandatory=$True, Position=0)]
+        [string]
+        $Zone,
+
+        [Parameter(Mandatory=$true, Position=1, ValueFromPipelineByPropertyName=$True)]
+        [string[]]
+        $FQDN,
+
+        [Parameter(Mandatory=$false, Position=2, ValueFromPipelineByPropertyName=$True)]
+        [string[]]
+        $RecordId = [string]::Empty,
+
+        [Parameter(Mandatory=$true, Position=3)]
+        [ValidateSet('A', 'AAAA', 'ALIAS', 'CNAME', 'NS', 'MX', 'PTR', 'SRV', 'TXT')]
+        [string]
+        $RecordType
+    )
+
+    Begin {
+        $ResourceMap = $Script:DynECTResourceRecordMap
+
+        if ($ResourceMap.Keys -notcontains $RecordType) {
+            throw [System.ArgumentException]::New('Supplied RecordType is not correctly mapped within the module.')
+        }
+
+        $ResourceUri = $ResourceMap[$RecordType].ResourceUri
+        [array] $RDataProps = $ResourceMap[$RecordType].RDataProps
+    }
+
+    Process {
+        foreach ($Index in 0..($FQDN.Count-1)) {
+            $Name = $FQDN[$Index]
+
+            if ($PSBoundParameters.ContainsKey('RecordId')) {
+                $Id = $RecordId[$Index]
+            }
+
+            $Uri = "/$ResourceUri/$Zone/$Name"
+            if (-not [string]::IsNullOrEmpty($Id)) {
+                $ByRecordId = $True
+                $Uri = "$Uri/$Id"
+            }
+
+            $Response = Helper-InvokeRestMethod -Method GET -Uri $Uri
+
+            if ($Response.status -eq 'success') {
+                # Output the message from the remote side, verbose form.
+                $Response.msgs | foreach { Write-Verbose $_.INFO }
+
+                if ($ByRecordId) {
+                    $RecordInfo = [ordered] @{
+                        Zone = $Response.data.zone
+                        FQDN = $Response.data.fqdn
+                        RecordType = $Response.data.record_type
+                        RecordId = $Id
+                        TTL = $Response.data.ttl
+                    }
+        
+                    Write-Verbose "Processing $($RDataProps.Count) Record data properties"
+                    foreach ($Prop in $ResourceMap[$RecordType].RDataProps) {
+                        Write-Debug "Processing RecordData property $Prop"
+                        $RecordInfo.Add($Prop, $Response.data.rdata."$Prop")
+                    }
+
+                    $RecordData = New-Object -Type PSObject -Property $RecordInfo
+                    $RecordData.PSObject.TypeNames.Insert(0,"Kittyfox.DynECT.$($ResourceMap[$RecordType].TypeName)")
+                    Write-Output $RecordData
+                } else {
+                    $NodeList = @()
+
+                    foreach ($Entry in $Response.data) {
+                        $FoundId = ($Entry.Split('/') | where { -not [string]::IsNullOrEmpty($_) })[-1]
+                        $NodeList += New-Object -Type PSObject -Property @{FQDN = $Name; RecordId = $FoundId}
+                    }
+
+                    $NodeList | Helper-GetDynECTResourceRecord -Zone $Zone -RecordType $RecordType
+                }
+            } else {
+                $Message = ($Response.msgs | where { $_.LVL -eq 'ERROR' }).INFO
+
+                Write-Error $Message
+            }
+        }
+    }
+
+    End {
+    }
+}
+
 #endregion DynECT Helper Commandlets
 
-Export-ModuleMember -Function Connect-*, Disconnect-*, Test-*, Get-*, Set-*, New-*, Remove-*, Lock-*, Unlock-*, Publish-*, Clear-*
+Export-ModuleMember -Function Connect-*, Disconnect-*, Test-*, Get-*, Add-*, Set-*, New-*, Remove-*, Lock-*, Unlock-*, Publish-*, Clear-*
