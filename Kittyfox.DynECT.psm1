@@ -79,7 +79,6 @@ $DynECTResourceRecordData += New-Object PSObject -Property @{
 $DynECTRRTypeMap = ($DynECTResourceRecordData | Group-Object RecordType -AsHashTable)
 $DynECTRRUriMap = ($DynECTResourceRecordData | Group-Object ResourceUri -AsHashTable)
 
-
 <# Known Types of the Module
 
  Kittyfox.DynECT.ZoneInfo
@@ -721,25 +720,13 @@ Function Add-DynECTResourceRecord {
     }
 
     Process {
-        $RecordData = New-Object System.Collections.Hashtable
         $RecordType = $PSCmdlet.ParameterSetName
 
-        switch ($PSCmdlet.ParameterSetName) {
-            {$_ -in 'A', 'AAAA'} {
-                $RecordData.Add('address', $Address)
-            }
-            'CNAME' {
-                $RecordData.Add('cname', $HostNameAlias)
-            }
-            'TXT' {
-                $RecordData.Add('txtdata', $TXTData)
-            }
-            default {
-                throw [System.NotImplementedException]::New('This Resource Record Type is not yet implemented.')
-            }
-        }
+        $RDataSet = New-Object Hashtable -ArgumentList $PSBoundParameters
 
-        Helper-AddDynECTResourceRecord -Zone $Zone -FQDN $FQDN -TTL $TTL -RecordType $RecordType -AddRecordData $RecordData
+        $RecordData = Helper-FormatResourceRecordRData -RecordType $RecordType -RDataSet $RDataSet
+
+        Helper-StoreDynECTResourceRecord -Zone $Zone -FQDN $FQDN -TTL $TTL -RecordType $RecordType -AddRecordData $RecordData
     }
 
     End {
@@ -855,6 +842,96 @@ Function Get-DynECTResourceRecord {
 
             Write-Error $Message
         }
+    }
+
+    End {
+    }
+}
+
+Function Set-DynECTResourceRecord {
+    [CmdletBinding()]
+    Param(
+        [Parameter(Mandatory=$true, Position=0)]
+        [string]
+        $Zone,
+
+        [Parameter(Mandatory=$true, Position=1)]
+        [Alias('FQDN')]
+        [string]
+        $Name,
+
+        [Parameter(Mandatory=$false)]
+        [ValidateScript({[int]::TryParse($_, [ref] $null)})]
+        [string]
+        $TTL = 0,
+
+        [Parameter(Mandatory=$false)]
+        [string]
+        $RecordId,
+
+        [Parameter(ParameterSetName='A', Position=2, Mandatory=$true)]
+        [switch]
+        $A,
+
+        [Parameter(ParameterSetName='AAAA', Position=2, Mandatory=$true)]
+        [switch]
+        $AAAA,
+
+        [Parameter(ParameterSetName='A', Mandatory=$true)]
+        [Parameter(ParameterSetName='AAAA', Mandatory=$true)]
+        [ValidateScript({[ipaddress]::TryParse($_, [ref] $null)})]
+        [string]
+        $Address,
+
+        [Parameter(ParameterSetName='CNAME', Position=2, Mandatory=$true)]
+        [switch]
+        $CNAME,
+
+        [Parameter(ParameterSetName='CNAME', Mandatory=$true)]
+        [string]
+        $HostNameAlias,
+
+        [Parameter(ParameterSetName='TXT', Position=2, Mandatory=$true)]
+        [switch]
+        $TXT,
+
+        [Parameter(ParameterSetName='TXT', Mandatory=$true)]
+        [string]
+        $TXTData
+
+    )
+
+    Begin {
+        $RRTypeMap = $Script:DynECTRRTypeMap
+
+        $IsConnected = Test-DynECTSession -Reconnect
+
+        if (-not $IsConnected) {
+            Write-Error "Not connected to DynECT Managed DNS Service."
+            return
+        }
+
+        if ($Name.EndsWith($Zone)) {
+            $FQDN = $Name
+        } else {
+            $FQDN = "$Name.$Zone"
+        }
+    }
+
+    Process {
+        $RecordType = $PSCmdlet.ParameterSetName
+
+        $RDataSet = New-Object Hashtable -ArgumentList $PSBoundParameters
+        $RecordData = Helper-FormatResourceRecordRData -RecordType $RecordType -RDataSet $RDataSet
+
+        if ($PSBoundParameters.ContainsKey('RecordId')) {
+            $SetParamData = @{RecordId = $RecordId}
+        } else {
+            $SetParamData = @{Replace = $True}
+        }
+        $SetParamData.Add('UpdateRecordData', $RecordData)
+
+        Helper-StoreDynECTResourceRecord -Zone $Zone -FQDN $FQDN -TTL $TTL -RecordType $RecordType @SetParamData
     }
 
     End {
@@ -1089,10 +1166,10 @@ Function Helper-InvokeRestMethod {
     }
 
     if ($Method -in @('POST', 'PUT') -and $Body -ne $null) {
-        $JsonBody = ConvertTo-Json $Body
+        $JsonBody = ConvertTo-Json $Body -Depth 5
         $RestMethodParams.Add('Body', $JsonBody)
 
-        Write-Debug $JsonBody
+        # Write-Verbose $JsonBody
     }
 
     if ($Headers.Count -gt 0) {
@@ -1128,7 +1205,48 @@ Function Helper-DynECTRateLock {
     throw [System.NotImplementedException]::New("This commandlet is not yet implemented")
 }
 
-Function Helper-AddDynECTResourceRecord {
+Function Helper-FormatResourceRecordRData {
+    [CmdletBinding()]
+    Param(
+        [Parameter(Mandatory=$true, Position=0)]
+        [ValidateScript({$Script:DynECTRRTypeMap.ContainsKey($_)})]
+        [string]
+        $RecordType,
+
+        [Parameter(Mandatory=$true, Position=1)]
+        [Hashtable]
+        $RDataSet
+    )
+
+    Begin {
+    }
+
+    Process {
+        $RecordData = New-Object System.Collections.Hashtable
+
+        switch ($RecordType) {
+            {$_ -in 'A', 'AAAA'} {
+                $RecordData.Add('address', $RDataSet.Address)
+            }
+            'CNAME' {
+                $RecordData.Add('cname', $RDataSet.HostNameAlias)
+            }
+            'TXT' {
+                $RecordData.Add('txtdata', $RDataSet.TXTData)
+            }
+            default {
+                throw [System.NotImplementedException]::New('This Resource Record Type is not yet implemented.')
+            }
+        }
+
+        Write-Output $RecordData
+    }
+
+    End {
+    }
+}
+
+Function Helper-StoreDynECTResourceRecord {
     [CmdletBinding()]
     Param(
         [Parameter(Mandatory=$True, Position=0)]
@@ -1144,32 +1262,67 @@ Function Helper-AddDynECTResourceRecord {
         [string]
         $TTL = 0,
 
-        [Parameter(Mandatory=$true, Position=3)]
-        [ValidateSet('A', 'AAAA', 'CNAME', 'TXT')]
+        [ValidateScript({$Script:DynECTRRTypeMap.ContainsKey($_)})]
         [string]
         $RecordType,
 
-        [Parameter(Mandatory=$true, Position=4)]
+        [Parameter(ParameterSetName='AddNew', Mandatory=$true, Position=4)]
         [hashtable]
-        $AddRecordData
+        $AddRecordData,
+
+        [Parameter(ParameterSetName='UpdateOne', Mandatory=$true, Position=4)]
+        [string]
+        $RecordId,
+
+        [Parameter(ParameterSetName='ReplaceAll', Mandatory=$true)]
+        [switch]
+        $Replace,
+
+        [Parameter(ParameterSetName='UpdateOne', Mandatory=$true, Position=5)]
+        [Parameter(ParameterSetName='ReplaceAll', Mandatory=$true)]
+        [hashtable]
+        $UpdateRecordData
     )
 
     $ResourceMap = $Script:DynECTRRTypeMap
-
-    if ($ResourceMap.Keys -notcontains $RecordType) {
-        throw [System.ArgumentException]::New('Supplied RecordType is not correctly mapped within the module.')
-    }
 
     $ResourceUri = $ResourceMap[$RecordType].ResourceUri
     [array] $RDataProps = $ResourceMap[$RecordType].RDataProps
 
     $Uri = "/$ResourceUri/$Zone/$FQDN"
-    $RecordInfo = @{
-        rdata = $AddRecordData
-        ttl = $TTL
+
+    switch ($PSCmdlet.ParameterSetName) {
+        'AddNew' {
+            $Method = 'POST'
+            $RecordInfo = @{
+                rdata = $AddRecordData
+                ttl = $TTL
+            }
+        }
+        'UpdateOne' {
+            $Method = 'PUT'
+            $Uri = "$Uri/$RecordId"
+            $RecordInfo = @{
+                rdata = $UpdateRecordData
+                ttl = $TTL
+            }
+        }
+        'ReplaceAll' {
+            $Method = 'PUT'
+            $ReplaceTag = "$($ResourceMap[$RecordType].ResourceUri)s"
+            $RecordInfo = @{
+                $ReplaceTag = @(@{
+                    rdata = $UpdateRecordData
+                    ttl = $TTL
+                })
+            }
+        }
+        default {
+            throw [System.ArgumentException]::New("There be dragons here. Invalid Parameter Set Name after processing.")
+        }
     }
 
-    $Response = Helper-InvokeRestMethod -Method POST -Uri $Uri -Body $RecordInfo
+    $Response = Helper-InvokeRestMethod -Method $Method -Uri $Uri -Body $RecordInfo
 
     if ($Response.status -eq 'success') {
         # Output the message from the remote side, verbose form.
@@ -1194,7 +1347,7 @@ Function Helper-AddDynECTResourceRecord {
     } else {
         $Message = ($Response.msgs | where { $_.LVL -eq 'ERROR' }).INFO
 
-        Write-Error $Message
+        $Message | foreach { Write-Error $_ }
     }
 }
 
